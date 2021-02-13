@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
+from multiprocessing.pool import ThreadPool
 import yaml
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -35,6 +36,10 @@ from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_di
 
 logger = logging.getLogger(__name__)
 
+def fitness(x):
+    # Model fitness as a weighted combination of metrics
+    w = [1.5, 1.5, 0.3, 0.4]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
+    return (x[:, :4] * w).sum(1)
 
 def train(hyp, opt, device, tb_writer=None, wandb=None):
     logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
@@ -64,6 +69,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
+    t_test_path = data_dict['test']
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
@@ -197,6 +203,9 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '))[0]
+        t_testloader = create_dataloader(t_test_path, imgsz_test, total_batch_size, gs, opt,
+                                       hyp=hyp, augment=False, cache=opt.cache_images and not opt.notest, rect=True,
+                                       rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -316,12 +325,24 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                 pbar.set_description(s)
 
                 # Plot
-                if plots and ni < 3:
-                    f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
-                    # if tb_writer:
-                    #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
-                    #     tb_writer.add_graph(model, imgs)  # add model to tensorboard
+                if plots and i % 50 == 0:## Aman : previous = ni<3
+                    file_name = f'train_batch{i}.jpg'
+                    f = save_dir / file_name  # filename
+                    # # Aman : previous = from threading, problem= no return value
+                    # pool = ThreadPool()
+                    # async_result = pool.apply_async(plot_images, (imgs, targets, paths, f)) # tuple of args for foo
+                    # # do some other stuff in the main process
+                    # result = async_result.get()         
+
+                    # #Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+
+                    
+                    ## Aman : previous = Commented below code
+                    result = plot_images(imgs, targets, paths, f)
+                    if tb_writer:
+                        tb_writer.add_image("imgs/"+file_name, result, dataformats='HWC', global_step=epoch)
+                        # tb_writer.add_graph(model, imgs)  # add model to tensorboard
+
                 elif plots and ni == 10 and wandb:
                     wandb.log({"Mosaics": [wandb.Image(str(x), caption=x.name) for x in save_dir.glob('train*.jpg')
                                            if x.exists()]}, commit=False)
@@ -349,8 +370,21 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                                  save_dir=save_dir,
                                                  verbose=nc < 50 and final_epoch,
                                                  plots=plots and final_epoch,
-                                                 log_imgs=opt.log_imgs if wandb else 0,
+                                                 log_imgs=opt.log_imgs if (wandb or tb_writer) else 0,
                                                  compute_loss=compute_loss)
+                # Aman previous = not available
+                t_results, t_maps, t_times = test.test(opt.data,
+                                                 batch_size=batch_size * 2,
+                                                 imgsz=imgsz_test,
+                                                 model=ema.ema,
+                                                 single_cls=opt.single_cls,
+                                                 dataloader=t_testloader,
+                                                 save_dir=save_dir,
+                                                 verbose=nc < 50 and final_epoch,
+                                                 plots=plots and final_epoch,
+                                                 log_imgs=opt.log_imgs if (wandb or tb_writer)  else 0,
+                                                 compute_loss=compute_loss)
+
 
             # Write
             with open(results_file, 'a') as f:
@@ -362,8 +396,10 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
                     'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
                     'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                    'test_metrics/precision', 'test_metrics/recall', 'test_metrics/mAP_0.5', 'test_metrics/mAP_0.5:0.95',
+                    'test/giou_loss', 'test/obj_loss', 'test/cls_loss',  # test loss
                     'x/lr0', 'x/lr1', 'x/lr2']  # params
-            for x, tag in zip(list(mloss[:-1]) + list(results) + lr, tags):
+            for x, tag in zip(list(mloss[:-1]) + list(results)+ list(t_results) + lr, tags):
                 if tb_writer:
                     tb_writer.add_scalar(tag, x, epoch)  # tensorboard
                 if wandb:
@@ -427,6 +463,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                           save_dir=save_dir,
                                           save_json=save_json,
                                           plots=False)
+                
 
     else:
         dist.destroy_process_group()
