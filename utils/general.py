@@ -555,5 +555,5 @@ def increment_path(path, exist_ok=True, sep=''):
 
 def get_index_weights(dataset,nsr):
     iw = np.ones(dataset.n) * (1 - nsr)
-    iw  = [nsr if len(seg) != 0 else (1 - nsr) for seg in dataset.segments ]
+    iw  = [(1 - nsr) if len(label) else nsr for label in dataset.labels]
     return iw
