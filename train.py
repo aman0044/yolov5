@@ -28,7 +28,7 @@ from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
-    check_requirements, print_mutation, set_logging, one_cycle, colorstr
+    check_requirements, print_mutation, set_logging, one_cycle, colorstr, get_index_weights
 from utils.google_utils import attempt_download
 from utils.loss import ComputeLoss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
@@ -261,6 +261,10 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                 if rank != 0:
                     dataset.indices = indices.cpu().numpy()
 
+        if opt.nsr > 0:
+            logger.info("applying weighted nsr")
+            iw = get_index_weights(dataset,opt.nsr)
+            dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)
         # Update mosaic border
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
@@ -505,6 +509,7 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--quad', action='store_true', help='quad dataloader')
     parser.add_argument('--linear-lr', action='store_true', help='linear LR')
+    parser.add_argument('--nsr', type=float, default = 0.2, help='negative sampling ratio for weighted sampling')
     opt = parser.parse_args()
 
     # Set DDP variables

@@ -552,3 +552,8 @@ def increment_path(path, exist_ok=True, sep=''):
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
         return f"{path}{sep}{n}"  # update path
+
+def get_index_weights(dataset,nsr):
+    iw = np.ones(dataset.n) * (1 - nsr)
+    iw  = [nsr if len(seg) != 0 else (1 - nsr) for seg in dataset.segments ]
+    return iw
