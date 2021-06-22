@@ -21,7 +21,7 @@ from utils.torch_utils import select_device, time_synchronized
 def test(data,
          weights=None,
          batch_size=32,
-         imgsz=640,
+         imgsz=1024,
          conf_thres=0.001,
          iou_thres=0.6,  # for NMS
          save_json=False,
@@ -35,7 +35,7 @@ def test(data,
          save_hybrid=False,  # for hybrid auto-labelling
          save_conf=False,  # save auto-label confidences
          plots=True,
-         log_imgs=0,  # number of logged images
+         log_imgs=10,  # number of logged images
          compute_loss=None):
     # Initialize/load model and set device
     training = model is not None
@@ -205,7 +205,7 @@ def test(data,
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images
-        if plots and batch_i < 3:
+        if plots and (batch_i % 10== 0):
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
@@ -245,7 +245,7 @@ def test(data,
     # Save JSON
     if save_json and len(jdict):
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
-        anno_json = '../coco/annotations/instances_val2017.json'  # annotations json
+        anno_json = '../fire_hydrant/combined_training_data/kfolds/data_fold_1/coco/test.json'  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
         print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
         with open(pred_json, 'w') as f:

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def fitness(x):
     # Model fitness as a weighted combination of metrics
-    w = [1.5, 1.5, 0.3, 0.4]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
+    w = [0.15, 0.15, 0.3, 0.4]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
 
 def train(hyp, opt, device, tb_writer=None, wandb=None):
@@ -69,7 +69,9 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
-    t_test_path = data_dict['test']
+    t_test_path = None
+    if "test" in data_dict.keys():
+        t_test_path = data_dict['test']
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
@@ -203,9 +205,10 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '))[0]
-        t_testloader = create_dataloader(t_test_path, imgsz_test, total_batch_size, gs, opt,
-                                       hyp=hyp, augment=False, cache=opt.cache_images and not opt.notest, rect=True,
-                                       rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
+        if t_test_path is not None:
+            t_testloader = create_dataloader(t_test_path, imgsz_test, total_batch_size, gs, opt,
+                                           hyp=hyp, augment=False, cache=opt.cache_images and not opt.notest, rect=True,
+                                           rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -361,31 +364,36 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         # DDP process 0 or single-GPU
         if rank in [-1, 0]:
             # mAP
+            verbose_interval = False
+            if epoch % 10 ==0:
+                verbose_interval = True 
+                
             if ema:
                 ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
-            if not opt.notest or final_epoch:  # Calculate mAP
+            if final_epoch or verbose_interval:  # Calculate mAP
                 results, maps, times = test.test(opt.data,
-                                                 batch_size=batch_size * 2,
+                                                 batch_size=batch_size,
                                                  imgsz=imgsz_test,
                                                  model=ema.ema,
                                                  single_cls=opt.single_cls,
                                                  dataloader=testloader,
                                                  save_dir=save_dir,
-                                                 verbose=nc < 50 and final_epoch,
-                                                 plots=plots and final_epoch,
+                                                 verbose=verbose_interval or final_epoch,
+                                                 plots=verbose_interval or final_epoch,
                                                  log_imgs=opt.log_imgs if (wandb or tb_writer) else 0,
                                                  compute_loss=compute_loss)
                 # Aman previous = not available
-                t_results, t_maps, t_times = test.test(opt.data,
-                                                 batch_size=batch_size * 2,
+                if t_test_path is not None:
+                    t_results, t_maps, t_times = test.test(opt.data,
+                                                 batch_size=batch_size,
                                                  imgsz=imgsz_test,
                                                  model=ema.ema,
                                                  single_cls=opt.single_cls,
                                                  dataloader=t_testloader,
                                                  save_dir=save_dir,
-                                                 verbose=nc < 50 and final_epoch,
-                                                 plots=plots and final_epoch,
+                                                 verbose=verbose_interval or final_epoch,
+                                                 plots=verbose_interval or final_epoch,
                                                  log_imgs=opt.log_imgs if (wandb or tb_writer)  else 0,
                                                  compute_loss=compute_loss)
 
@@ -395,20 +403,30 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                 f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
-
-            # Log
-            tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
-                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
-                    'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
-                    'test_metrics/precision', 'test_metrics/recall', 'test_metrics/mAP_0.5', 'test_metrics/mAP_0.5:0.95',
-                    'test/giou_loss', 'test/obj_loss', 'test/cls_loss',  # test loss
-                    'x/lr0', 'x/lr1', 'x/lr2']  # params
-            for x, tag in zip(list(mloss[:-1]) + list(results)+ list(t_results) + lr, tags):
-                if tb_writer:
-                    tb_writer.add_scalar(tag, x, epoch)  # tensorboard
-                if wandb:
-                    wandb.log({tag: x}, step=epoch, commit=tag == tags[-1])  # W&B
-
+            if t_test_path is not None:
+                # Log
+                tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                        'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
+                        'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                        'test_metrics/precision', 'test_metrics/recall', 'test_metrics/mAP_0.5', 'test_metrics/mAP_0.5:0.95',
+                        'test/giou_loss', 'test/obj_loss', 'test/cls_loss',  # test loss
+                        'x/lr0', 'x/lr1', 'x/lr2']  # params
+                for x, tag in zip(list(mloss[:-1]) + list(results)+ list(t_results) + lr, tags):
+                    if tb_writer:
+                        tb_writer.add_scalar(tag, x, epoch)  # tensorboard
+                    if wandb:
+                        wandb.log({tag: x}, step=epoch, commit=tag == tags[-1])  # W&B
+            else:
+                # Log
+                tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                        'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
+                        'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                        'x/lr0', 'x/lr1', 'x/lr2']  # params
+                for x, tag in zip(list(mloss[:-1]) + list(results) + lr, tags):
+                    if tb_writer:
+                        tb_writer.add_scalar(tag, x, epoch)  # tensorboard
+                    if wandb:
+                        wandb.log({tag: x}, step=epoch, commit=tag == tags[-1])  # W&B
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
