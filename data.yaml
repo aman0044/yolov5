@@ -1,6 +1,6 @@
 names: [fire_hydrant, others, letter_box, light_poles]
 nc: 4
-train: ../fire_hydrant/combined_training_data/images/train
+train: ../fire_hydrant/combined_training_data/with_FH/images/train
 # train : ./train.txt
 # val: ./
 # test: ./

@@ -582,21 +582,24 @@ if __name__ == '__main__':
         kf = KFold(n_splits=opt.k)
 
         for index , (train_index, test_index) in enumerate(kf.split(image_paths)):
-#             print (index ,train_index, test_index)
-            with open('./train.txt', "w") as f:
-                for path in image_paths[train_index]:
-                    f.write(path+'\n')
-
-            with open('./val.txt', "w") as f:
-                for path in image_paths[test_index]:
-                    f.write(path+'\n')
-
-            data_dict["train"] = "./train.txt"
-            data_dict["val"] = "./val.txt"
             if index == 0 :
                 opt.save_dir  =  f"{opt.save_dir}_fold_{str(index)}"
             else:
                 opt.save_dir  = f"{opt.save_dir[:-1]}{str(index)}" # assuming value of v is <=10
+            
+            os.makedirs(opt.save_dir ,exist_ok = True)
+            data_dict["train"] =f"{opt.save_dir}/train.txt"
+            data_dict["val"] = f"{opt.save_dir}/val.txt"
+            
+#             print (index ,train_index, test_index)
+            with open(data_dict["train"], "w") as f:
+                for path in image_paths[train_index]:
+                    f.write(path+'\n')
+
+            with open(data_dict["val"], "w") as f:
+                for path in image_paths[test_index]:
+                    f.write(path+'\n')
+            
             # Train
             logger.info(opt)
             try:
@@ -611,8 +614,9 @@ if __name__ == '__main__':
                 logger.info(f'Start Tensorboard with "tensorboard --logdir {opt.project}", view at http://localhost:6006/')
                 tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
             train(hyp, opt, device,data_dict, tb_writer, wandb)
-            os.remove("val.cache")
-            os.remove("train.cache")
+            if os.path.isfile("train.cache"):
+                os.remove("val.cache")
+                os.remove("train.cache")
 
     # Evolve hyperparameters (optional)
     else:
